@@ -178,7 +178,7 @@ instance IHaskellDisplay Records where
             td $ pre $ toHtml $ BS.toString $ verb req
             td $ pre $ toHtml $ ellipsify 50 $ BS.toString $ path req <> query_param_string (query_params req)
             td $ pre $ toHtml $ BS.toString $ status_code resp
-            td $ pre $ toHtml $ BS.toString $ header "Content-Length" resp
+            td $ pre $ toHtml $ show $ BS.length (body' resp)
           ) (unRecords rs))
     ]
 
