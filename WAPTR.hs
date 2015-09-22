@@ -5,6 +5,7 @@ import Control.Arrow
 import Control.Monad
 import Database.Redis
 import Data.Maybe
+import Data.Either
 import Data.Monoid
 import Data.Function
 import Data.Binary.Get (runGet)
@@ -15,7 +16,7 @@ import qualified Data.ByteString.Char8 as BS
 import Data.ByteString.Lazy (fromStrict)
 import qualified Data.ByteString.UTF8 as BS  (toString)
 import qualified Data.ByteString.Lazy.UTF8 as LBS  (toString)
-import Data.List (nub)
+import Data.List (nub, isPrefixOf)
 import Text.Parsec
 import HHTTPP.Request (Request(..), parse_request, query_param_string)
 import HHTTPP.Response (Response(..), parse_response)
@@ -42,18 +43,25 @@ data Records = Records [Record] -- for IHaskellDisplay instance
 unRecords :: Records -> [Record]
 unRecords (Records a) = a
 
-getHistory :: IO Records = do
+getRecord :: String -> IO Record
+getRecord s = head . filter (idF (s `isPrefixOf`)) . unRecords <$> getHistory
+
+getHistory :: IO Records
+getHistory = Records . rights <$> _getHistory
+
+parseErrors = lefts <$> _getHistory
+
+_getHistory :: IO [Either ParseError Record] = do
   conn <- connect defaultConnectInfo
   r <- runRedis conn $ do
     llen "qert-history" >>= (either (error "llen failed") (lrange "qert-history" 0))
   either (error "lrange failed") (return . parse' . map (runGet getDocument . fromStrict)) r
     where
-      parse' :: [Document] -> Records
-      parse' = Records .
-                 mapMaybe (\d -> parse parse_request "" (unBinary (at "request" d)) &
-                     either (const Nothing) (\req' ->
+      parse' :: [Document] -> [Either ParseError Record]
+      parse' = map (\d -> parse parse_request "" (unBinary (at "request" d)) &
+                     either Left (\req' ->
                      parse parse_response "" (unBinary (at "response" d)) &
-                     either (const Nothing) (\resp' ->
+                     either Left (\resp' ->
                      return $ Record (at "id" d) req' resp')))
       unBinary :: Binary -> ByteString
       unBinary (Binary b) = b
@@ -76,6 +84,9 @@ instance HasCommonBody Request where
   common_body = request_rest
 instance HasCommonBody Response where
   common_body = response_rest
+
+body' :: (HasCommonBody a) => a -> ByteString
+body' = body . common_body
 
 header :: (HasCommonBody a) => ByteString -> a -> ByteString
 header h a = fromMaybe "" (lookupHeader h (headers (common_body a)))
@@ -104,13 +115,14 @@ pathF f Record{..} = f (path req)
 fileExtF :: (ByteString -> Bool) -> Record -> Bool
 fileExtF f = pathF (maybe False f . lastM . BS.split '.')
 
-p n Record{..} = putStrLn ("-------" ++ recId ++ "-------") >> BS.putStrLn
-                (verb req <> " " <> path req <> query_param_string (query_params req) <> " " <> request_version req
+p :: Maybe Int -> Record -> ByteString
+p maybeN Record{..} = verb req <> " " <> path req <> query_param_string (query_params req) <> " " 
+             <> request_version req
              <> "\n" <> BS.concat (map print_http (headers (common_body req))) <> "\n"
-             <> BS.take n (body (common_body req))
+             <> maybe (body' req) (\n -> BS.take n $ body' req) maybeN <> "\n"
              <> "\n" <> http_version resp <> " " <> status_code resp <> " " <> status_msg resp <> "\n"
              <> BS.concat (map print_http (headers (common_body resp))) <> "\n"
-              <> BS.take n (body (common_body resp)) <> "\n")
+             <> maybe (body' resp) (\n -> BS.take n $ body' resp) maybeN <> "\n"
 
 ellipsify :: Int -> String -> String
 ellipsify n s = if length s > (n - 3) then take (n - 3) s ++ "..." else s
@@ -118,7 +130,8 @@ ellipsify n s = if length s > (n - 3) then take (n - 3) s ++ "..." else s
 instance IHaskellDisplay Records where
   display rs = return $ Display [ IHaskell.html $ LBS.toString $ renderMarkup $ void $ html $ do
       table (
-        tr (td "id" >> td "host" >> td "verb" >> td "path" >> td "status" >> td "length") >>
+        tr (td (pre "id") >> td (pre "host") >> td (pre "verb") >> td (pre "path") >> td (pre "status") >> 
+            td (pre "length")) >>
         mapM_ (\r@Record{..} -> do
           tr $ do
             td $ pre $ toHtml $ (take 6 recId)
@@ -130,9 +143,13 @@ instance IHaskellDisplay Records where
           ) (unRecords rs))
     ]
 
-filt f = Records . filter f . unRecords
+instance IHaskellDisplay Record where
+  display r = return $ Display [ IHaskell.html $ LBS.toString $ renderMarkup $ void $ html $ do
+      pre $ toHtml $ BS.toString (p (Just 1000) r)
+    ]
 
-ps xs = putStrLn ((show (length xs)) ++ " records:") >> mapM_ (p 400) xs
+filt f = Records . filter f . unRecords
+map' f = Records . map f . unRecords
 
 (-=-) = isInfixOf
 (&-&) = andF
@@ -140,4 +157,4 @@ ps xs = putStrLn ((show (length xs)) ++ " records:") >> mapM_ (p 400) xs
 
 main = do
   rs <- getHistory
-  ps $ filter (respF (hasHeader "Content-Encoding")) (unRecords rs)
+  undefined $ filter (respF (hasHeader "Content-Encoding")) (unRecords rs)
