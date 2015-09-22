@@ -4,6 +4,7 @@ module WAPTR where
 import Control.Arrow
 import Control.Monad
 import Database.Redis
+import Data.Char
 import Data.Maybe
 import Data.Either
 import Data.Monoid
@@ -13,11 +14,12 @@ import Data.Bson (Binary(..), Document, at)
 import Data.Bson.Binary (getDocument)
 import Data.ByteString (ByteString, isInfixOf)
 import qualified Data.ByteString.Char8 as BS
-import Data.ByteString.Lazy (fromStrict)
+import qualified Data.ByteString.Lazy.Char8 as LBS
+import Data.ByteString.Lazy (fromStrict, toStrict)
 import qualified Data.ByteString.UTF8 as BS  (toString)
 import qualified Data.ByteString.Lazy.UTF8 as LBS  (toString)
 import Data.List (nub, isPrefixOf)
-import Text.Parsec
+import Text.Parsec (parse, ParseError)
 import HHTTPP.Request (Request(..), parse_request, query_param_string)
 import HHTTPP.Response (Response(..), parse_response)
 import HHTTPP.Common
@@ -25,6 +27,10 @@ import IHaskell.Display (IHaskellDisplay(..), Display(..))
 import qualified IHaskell.Display as IHaskell (html)
 import Text.Blaze.Html5 (html, table, tr, td, toHtml, th, pre)
 import Text.Blaze.Renderer.Utf8
+import Control.Exception (evaluate, try, SomeException)
+import qualified Codec.Compression.Zlib as Deflate
+import qualified Codec.Compression.GZip as GZip
+import System.IO.Unsafe (unsafePerformIO)
 
 -- util
 lastM :: [a] -> Maybe a
@@ -62,9 +68,39 @@ _getHistory :: IO [Either ParseError Record] = do
                      either Left (\req' ->
                      parse parse_response "" (unBinary (at "response" d)) &
                      either Left (\resp' ->
-                     return $ Record (at "id" d) req' resp')))
+                     return $ Record (at "id" d) (decompress req') (decompress resp'))))
       unBinary :: Binary -> ByteString
       unBinary (Binary b) = b
+
+decompress :: HasCommonBody a => a -> a
+decompress r = if      header "Content-Encoding" r `ciEq` "gzip" ||
+                       header "Transfer-Encoding" r `ciEq` "gzip" then
+                 setBody ((getBody r) { body = fromMaybe (body' r) $ gzipDecompress (body' r) }) r -- TODO real lenses
+               else if header "Content-Encoding" r `ciEq` "deflate" ||
+                       header "Transfer-Encoding" r `ciEq` "deflate" then
+                 setBody ((getBody r) { body = fromMaybe (body' r) $ deflateDecompress (body' r) }) r
+               else if header "Transfer-Encoding" r `ciEq` "chunked" then
+                 setBody ((getBody r) { body = fromMaybe (body' r) $ unChunk (body' r) }) r
+               else
+                 r
+
+eToM :: Either e a -> Maybe a
+eToM (Left _) = Nothing
+eToM (Right a) = Just a
+
+gzipDecompress :: ByteString -> Maybe ByteString
+gzipDecompress a = fmap (toStrict) $ eToM $ unsafePerformIO $ (try :: IO LBS.ByteString -> IO (Either SomeException LBS.ByteString))
+                    $ evaluate (GZip.decompress (fromStrict a))
+
+deflateDecompress :: ByteString -> Maybe ByteString
+deflateDecompress a = fmap (toStrict) $ eToM $ unsafePerformIO $ (try :: IO LBS.ByteString -> IO (Either SomeException LBS.ByteString))
+                    $ evaluate (Deflate.decompress (fromStrict a))
+
+unChunk :: ByteString -> Maybe ByteString
+unChunk = error "LOL CHUNKED"
+
+ciEq :: ByteString -> ByteString -> Bool
+ciEq a b = BS.map toLower a == BS.map toLower b
 
 redisSave :: IO () = do
   conn <- connect defaultConnectInfo
@@ -79,23 +115,26 @@ orF f g a = (f a) || (g a)
 
 -- lenses
 class HasCommonBody a where
-  common_body :: a -> CommonBody
+  getBody :: a -> CommonBody
+  setBody :: CommonBody -> a -> a
 instance HasCommonBody Request where
-  common_body = request_rest
+  getBody = request_rest
+  setBody c r = r { request_rest = c }
 instance HasCommonBody Response where
-  common_body = response_rest
+  getBody = response_rest
+  setBody c r = r { response_rest = c }
 
 body' :: (HasCommonBody a) => a -> ByteString
-body' = body . common_body
+body' = body . getBody
 
 header :: (HasCommonBody a) => ByteString -> a -> ByteString
-header h a = fromMaybe "" (lookupHeader h (headers (common_body a)))
+header h a = fromMaybe "" (lookupHeader h (headers (getBody a)))
 
 host :: Record -> ByteString
 host Record{..} = header "host" req
 
 hasHeader :: (HasCommonBody a) => ByteString -> a -> Bool
-hasHeader h a = maybe False (const True) (lookupHeader h (headers (common_body a)))
+hasHeader h a = maybe False (const True) (lookupHeader h (headers (getBody a)))
 
 hostF :: (ByteString -> Bool) -> Record -> Bool
 hostF f Record{..} = f (header "host" req)
@@ -116,12 +155,12 @@ fileExtF :: (ByteString -> Bool) -> Record -> Bool
 fileExtF f = pathF (maybe False f . lastM . BS.split '.')
 
 p :: Maybe Int -> Record -> ByteString
-p maybeN Record{..} = verb req <> " " <> path req <> query_param_string (query_params req) <> " " 
+p maybeN Record{..} = verb req <> " " <> path req <> query_param_string (query_params req) <> " "
              <> request_version req
-             <> "\n" <> BS.concat (map print_http (headers (common_body req))) <> "\n"
+             <> "\n" <> BS.concat (map print_http (headers (getBody req))) <> "\n"
              <> maybe (body' req) (\n -> BS.take n $ body' req) maybeN <> "\n"
              <> "\n" <> http_version resp <> " " <> status_code resp <> " " <> status_msg resp <> "\n"
-             <> BS.concat (map print_http (headers (common_body resp))) <> "\n"
+             <> BS.concat (map print_http (headers (getBody resp))) <> "\n"
              <> maybe (body' resp) (\n -> BS.take n $ body' resp) maybeN <> "\n"
 
 ellipsify :: Int -> String -> String
@@ -130,7 +169,7 @@ ellipsify n s = if length s > (n - 3) then take (n - 3) s ++ "..." else s
 instance IHaskellDisplay Records where
   display rs = return $ Display [ IHaskell.html $ LBS.toString $ renderMarkup $ void $ html $ do
       table (
-        tr (td (pre "id") >> td (pre "host") >> td (pre "verb") >> td (pre "path") >> td (pre "status") >> 
+        tr (td (pre "id") >> td (pre "host") >> td (pre "verb") >> td (pre "path") >> td (pre "status") >>
             td (pre "length")) >>
         mapM_ (\r@Record{..} -> do
           tr $ do
