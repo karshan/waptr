@@ -1,4 +1,6 @@
 {-# LANGUAGE ScopedTypeVariables, OverloadedStrings #-}
+module WAPTR where
+
 import Control.Arrow
 import Database.Redis
 import Data.Maybe
@@ -79,4 +81,4 @@ ps = mapM_ (p 400)
 
 main = do
   rs <- getHistory
-  ps $ filter (respF (hasHeader "Set-Cookie")) rs
+  ps $ filter (respF (hasHeader "Content-Encoding")) rs
