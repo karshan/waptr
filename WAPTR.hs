@@ -4,12 +4,13 @@ module WAPTR where
 import Control.Arrow
 import Control.Monad
 import Control.Lens hiding (at, pre)
-import Database.Redis
+import Database.Redis hiding (sort, sortBy)
 import Data.Char
 import Data.Time.Clock.POSIX
 import Data.Time.Format
 import Data.Maybe
 import Data.Either
+import Data.Function (on)
 import Data.Monoid
 import Data.Binary.Get (runGet)
 import Data.Bson (Binary(..), Document, at)
@@ -20,7 +21,7 @@ import qualified Data.ByteString.Lazy.Char8 as LBS
 import Data.ByteString.Lazy (fromStrict, toStrict)
 import qualified Data.ByteString.UTF8 as BS  (toString)
 import qualified Data.ByteString.Lazy.UTF8 as LBS  (toString)
-import Data.List (nub, isPrefixOf)
+import Data.List (nub, isPrefixOf, sortBy)
 import Text.Parsec (parse, ParseError)
 import HHTTPP.Request (Request(..), parse_request, query_param_string)
 import HHTTPP.Response (Response(..), parse_response)
@@ -62,6 +63,12 @@ lastM :: [a] -> Maybe a
 lastM [] = Nothing
 lastM (x:[]) = Just x
 lastM (x:xs) = lastM xs
+
+sortA :: Ord a => (Record -> a) -> Records -> Records
+sortA f = Records . sortBy (compare `on` f) . unRecords
+
+sortD :: Ord a => (Record -> a) -> Records -> Records
+sortD f = Records . sortBy (flip compare `on` f) . unRecords
 
 data Record = Record {
     recId :: String,
@@ -162,6 +169,8 @@ instance HasCommonBody Response where
 
 body' :: (HasCommonBody a) => a -> ByteString
 body' = body . getBody
+
+respLength = BS.length . body' . resp
 
 header :: (HasCommonBody a) => ByteString -> a -> ByteString
 header h a = fromMaybe "" (lookupHeader h (headers (getBody a)))
