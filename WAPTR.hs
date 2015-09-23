@@ -5,6 +5,8 @@ import Control.Arrow
 import Control.Monad
 import Database.Redis
 import Data.Char
+import Data.Time.Clock.POSIX
+import Data.Time.Format
 import Data.Maybe
 import Data.Either
 import Data.Monoid
@@ -30,7 +32,6 @@ import Text.Blaze.Renderer.Utf8
 import Control.Exception (evaluate, try, SomeException)
 import qualified Codec.Compression.Zlib as Deflate
 import qualified Codec.Compression.GZip as GZip
-import System.IO.Unsafe (unsafePerformIO)
 import Data.Aeson (json')
 import Data.Aeson.Encode.Pretty (encodePretty)
 import qualified Data.Attoparsec.ByteString as Atto (parseOnly)
@@ -44,7 +45,8 @@ lastM (x:xs) = lastM xs
 data Record = Record {
     recId :: String,
     req  :: Request,
-    resp :: Response
+    resp :: Response,
+    timestamp :: Int
   } deriving (Show, Eq, Ord)
 
 data Records = Records [Record] -- for IHaskellDisplay instance
@@ -60,47 +62,52 @@ getHistory = Records . rights <$> _getHistory
 
 parseErrors = lefts <$> _getHistory
 
+getRaw :: IO [Document] = do
+  conn <- connect defaultConnectInfo
+  r <- runRedis conn $ do
+    llen "qert-history" >>= (either (error "llen failed") (lrange "qert-history" 0))
+  either (error "lrange failed") (return . map (runGet getDocument . fromStrict)) r
+
 _getHistory :: IO [Either ParseError Record] = do
   conn <- connect defaultConnectInfo
   r <- runRedis conn $ do
     llen "qert-history" >>= (either (error "llen failed") (lrange "qert-history" 0))
-  either (error "lrange failed") (return . parse' . map (runGet getDocument . fromStrict)) r
-    where
-      parse' :: [Document] -> [Either ParseError Record]
-      parse' = map (\d -> parse parse_request "" (unBinary (at "request" d)) &
-                     either Left (\req' ->
-                     parse parse_response "" (unBinary (at "response" d)) &
-                     either Left (\resp' ->
-                     return $ jsBeautifyRecord $ Record (at "id" d) (decompress req') (decompress resp'))))
-      unBinary :: Binary -> ByteString
-      unBinary (Binary b) = b
+  either (error "lrange failed") (parse' . map (runGet getDocument . fromStrict)) r
 
-decompress :: HasCommonBody a => a -> a
+parse' :: [Document] -> IO [Either ParseError Record]
+parse' = mapM (\d -> parse parse_request "" (unBinary (at "request" d)) &
+             either (return . Left) (\req' ->
+             parse parse_response "" (unBinary (at "response" d)) &
+             either (return . Left) (\resp' -> do
+               req'' <- decompress req'
+               resp'' <- decompress resp'
+               return $ Right $ jsBeautifyRecord $ Record (at "id" d) req'' resp'' (at "time" d))))
+unBinary :: Binary -> ByteString
+unBinary (Binary b) = b
+
+decompress :: HasCommonBody a => a -> IO a
 decompress r = if      header "Content-Encoding" r `ciEq` "gzip" ||
                        header "Transfer-Encoding" r `ciEq` "gzip" then
-                 setBody ((getBody r) { body = fromMaybe (body' r) $ gzipDecompress (body' r) }) r -- TODO real lenses
+                 gzipDecompress (body' r) & fmap (\b ->
+                   setBody ((getBody r) { body = fromMaybe (body' r) b }) r) -- TODO real lenses
                else if header "Content-Encoding" r `ciEq` "deflate" ||
                        header "Transfer-Encoding" r `ciEq` "deflate" then
-                 setBody ((getBody r) { body = fromMaybe (body' r) $ deflateDecompress (body' r) }) r
-               else if header "Transfer-Encoding" r `ciEq` "chunked" then
-                 setBody ((getBody r) { body = fromMaybe (body' r) $ unChunk (body' r) }) r
+                 deflateDecompress (body' r) & fmap (\b ->
+                   setBody ((getBody r) { body = fromMaybe (body' r) b }) r)
                else
-                 r
+                 return r
 
 eToM :: Either e a -> Maybe a
 eToM (Left _) = Nothing
 eToM (Right a) = Just a
 
-gzipDecompress :: ByteString -> Maybe ByteString
-gzipDecompress a = fmap (toStrict) $ eToM $ unsafePerformIO $ (try :: IO LBS.ByteString -> IO (Either SomeException LBS.ByteString))
+gzipDecompress :: ByteString -> IO (Maybe ByteString)
+gzipDecompress a = fmap (fmap toStrict) $ fmap eToM $ (try :: IO LBS.ByteString -> IO (Either SomeException LBS.ByteString))
                     $ evaluate (GZip.decompress (fromStrict a))
 
-deflateDecompress :: ByteString -> Maybe ByteString
-deflateDecompress a = fmap (toStrict) $ eToM $ unsafePerformIO $ (try :: IO LBS.ByteString -> IO (Either SomeException LBS.ByteString))
+deflateDecompress :: ByteString -> IO (Maybe ByteString)
+deflateDecompress a = fmap (fmap toStrict) $ fmap eToM $ (try :: IO LBS.ByteString -> IO (Either SomeException LBS.ByteString))
                     $ evaluate (Deflate.decompress (fromStrict a))
-
-unChunk :: ByteString -> Maybe ByteString
-unChunk = error "LOL CHUNKED"
 
 ciEq :: ByteString -> ByteString -> Bool
 ciEq a b = BS.map toLower a == BS.map toLower b
@@ -173,15 +180,16 @@ instance IHaskellDisplay Records where
   display rs = return $ Display [ IHaskell.html $ LBS.toString $ renderMarkup $ void $ html $ do
       table (
         tr (td (pre "id") >> td (pre "host") >> td (pre "verb") >> td (pre "path") >> td (pre "status") >>
-            td (pre "length")) >>
+            td (pre "length") >> td (pre "time")) >>
         mapM_ (\r@Record{..} -> do
           tr $ do
             td $ pre $ toHtml $ (take 6 recId)
             td $ pre $ toHtml $ BS.toString $ host r
             td $ pre $ toHtml $ BS.toString $ verb req
-            td $ pre $ toHtml $ ellipsify 50 $ BS.toString $ path req <> query_param_string (query_params req)
+            td $ pre $ toHtml $ ellipsify 110 $ BS.toString $ path req <> query_param_string (query_params req)
             td $ pre $ toHtml $ BS.toString $ status_code resp
             td $ pre $ toHtml $ show $ BS.length (body' resp)
+            td $ pre $ toHtml $ formatTime defaultTimeLocale "%d-%H:%M:%S" $ posixSecondsToUTCTime ((fromIntegral (timestamp `div` 1000000000)) - 7 * 60 * 60)
           ) (unRecords rs))
     ]
 
