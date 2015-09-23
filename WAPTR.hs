@@ -165,7 +165,7 @@ fileExtF :: (ByteString -> Bool) -> Record -> Bool
 fileExtF f = pathF (maybe True f . lastM . BS.split '.')
 
 p :: Maybe Int -> Record -> ByteString
-p maybeN Record{..} = verb req <> " " <> path req <> query_param_string (query_params req) <> " "
+p maybeN Record{..} = verb req <> " " <> path req <> "?" <> query_param_string (query_params req) <> " "
              <> request_version req
              <> "\n" <> BS.concat (map print_http (headers (getBody req))) <> "\n"
              <> maybe (body' req) (\n -> BS.take n $ body' req) maybeN <> "\n"
@@ -183,10 +183,10 @@ instance IHaskellDisplay Records where
             td (pre "length") >> td (pre "time")) >>
         mapM_ (\r@Record{..} -> do
           tr $ do
-            td $ pre $ toHtml $ (take 6 recId)
+            td $ pre $ toHtml $ (take 4 recId)
             td $ pre $ toHtml $ BS.toString $ host r
             td $ pre $ toHtml $ BS.toString $ verb req
-            td $ pre $ toHtml $ ellipsify 110 $ BS.toString $ path req <> query_param_string (query_params req)
+            td $ pre $ toHtml $ ellipsify 110 $ BS.toString $ path req <> "?" <> query_param_string (query_params req)
             td $ pre $ toHtml $ BS.toString $ status_code resp
             td $ pre $ toHtml $ show $ BS.length (body' resp)
             td $ pre $ toHtml $ formatTime defaultTimeLocale "%d-%H:%M:%S" $ posixSecondsToUTCTime ((fromIntegral (timestamp `div` 1000000000)) - 7 * 60 * 60)
