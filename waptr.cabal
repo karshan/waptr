@@ -19,6 +19,6 @@ library
   exposed-modules:     WAPTR
   -- other-modules:       
   other-extensions:    ScopedTypeVariables, OverloadedStrings
-  build-depends:       base >=4.8 && <4.9, hedis >=0.6 && <0.7, binary >=0.7 && <0.8, bson >=0.3 && <0.4, bytestring >=0.10 && <0.11, parsec >=3.1 && <3.2, hhttpp >=0.1 && <0.2, ihaskell, blaze-markup, blaze-html, utf8-string, zlib, aeson, aeson-pretty, attoparsec, time
+  build-depends:       base >=4.8 && <4.9, hedis >=0.6 && <0.7, binary >=0.7 && <0.8, bson >=0.3 && <0.4, bytestring >=0.10 && <0.11, parsec >=3.1 && <3.2, hhttpp >=0.1 && <0.2, ihaskell, blaze-markup, blaze-html, utf8-string, zlib, aeson, aeson-pretty, attoparsec, time, lens, wreq, http-client-tls, connection
   -- hs-source-dirs:      
   default-language:    Haskell2010

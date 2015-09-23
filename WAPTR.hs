@@ -3,6 +3,7 @@ module WAPTR where
 
 import Control.Arrow
 import Control.Monad
+import Control.Lens hiding (at, pre)
 import Database.Redis
 import Data.Char
 import Data.Time.Clock.POSIX
@@ -10,7 +11,6 @@ import Data.Time.Format
 import Data.Maybe
 import Data.Either
 import Data.Monoid
-import Data.Function
 import Data.Binary.Get (runGet)
 import Data.Bson (Binary(..), Document, at)
 import Data.Bson.Binary (getDocument)
@@ -35,6 +35,27 @@ import qualified Codec.Compression.GZip as GZip
 import Data.Aeson (json')
 import Data.Aeson.Encode.Pretty (encodePretty)
 import qualified Data.Attoparsec.ByteString as Atto (parseOnly)
+import qualified Network.Wreq as W
+import qualified Network.Wreq.Types as W (Putable, Postable)
+import Network.HTTP.Client.TLS (mkManagerSettings)
+import Network.Connection (ProxySettings(..), TLSSettings(..))
+
+wreqOptions = W.defaults & W.redirects .~ 0 & W.checkStatus .~ (Just $ \_ _ _ -> Nothing) & W.manager .~ Left (mkManagerSettings (TLSSettingsSimple True False True) (Just $ SockSettingsSimple "localhost" 1080))
+
+get :: String -> IO (W.Response LBS.ByteString)
+get = W.getWith wreqOptions
+
+put :: W.Putable a => String -> a -> IO (W.Response LBS.ByteString)
+put = W.putWith wreqOptions
+
+post :: W.Postable a => String -> a -> IO (W.Response LBS.ByteString)
+post = W.postWith wreqOptions
+
+delete :: String -> IO (W.Response LBS.ByteString)
+delete = W.deleteWith wreqOptions
+
+options :: String -> IO (W.Response ())
+options = W.optionsWith wreqOptions
 
 -- util
 lastM :: [a] -> Maybe a
