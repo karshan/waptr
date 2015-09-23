@@ -31,6 +31,9 @@ import Control.Exception (evaluate, try, SomeException)
 import qualified Codec.Compression.Zlib as Deflate
 import qualified Codec.Compression.GZip as GZip
 import System.IO.Unsafe (unsafePerformIO)
+import Data.Aeson (json')
+import Data.Aeson.Encode.Pretty (encodePretty)
+import qualified Data.Attoparsec.ByteString as Atto (parseOnly)
 
 -- util
 lastM :: [a] -> Maybe a
@@ -68,7 +71,7 @@ _getHistory :: IO [Either ParseError Record] = do
                      either Left (\req' ->
                      parse parse_response "" (unBinary (at "response" d)) &
                      either Left (\resp' ->
-                     return $ Record (at "id" d) (decompress req') (decompress resp'))))
+                     return $ jsBeautifyRecord $ Record (at "id" d) (decompress req') (decompress resp'))))
       unBinary :: Binary -> ByteString
       unBinary (Binary b) = b
 
@@ -152,7 +155,7 @@ pathF :: (ByteString -> Bool) -> Record -> Bool
 pathF f Record{..} = f (path req)
 
 fileExtF :: (ByteString -> Bool) -> Record -> Bool
-fileExtF f = pathF (maybe False f . lastM . BS.split '.')
+fileExtF f = pathF (maybe True f . lastM . BS.split '.')
 
 p :: Maybe Int -> Record -> ByteString
 p maybeN Record{..} = verb req <> " " <> path req <> query_param_string (query_params req) <> " "
@@ -184,7 +187,7 @@ instance IHaskellDisplay Records where
 
 instance IHaskellDisplay Record where
   display r = return $ Display [ IHaskell.html $ LBS.toString $ renderMarkup $ void $ html $ do
-      pre $ toHtml $ BS.toString (p (Just 1000) r)
+      pre $ toHtml $ BS.toString (p Nothing r)
     ]
 
 filt f = Records . filter f . unRecords
@@ -197,3 +200,12 @@ map' f = Records . map f . unRecords
 main = do
   rs <- getHistory
   undefined $ filter (respF (hasHeader "Content-Encoding")) (unRecords rs)
+
+jsBeautify :: ByteString -> Maybe ByteString
+jsBeautify s = (toStrict . encodePretty) <$> (eToM (Atto.parseOnly json' s))
+
+jsBeautifyRecord :: Record -> Record
+jsBeautifyRecord r = if "application/json" `BS.isPrefixOf` header "Content-Type" (resp r) then
+                       maybe r (\beautified -> r { resp = (resp r) { response_rest = (response_rest (resp r)) { body = beautified }}}) (jsBeautify (body' $ resp r))
+                     else
+                       r
