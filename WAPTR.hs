@@ -117,11 +117,16 @@ redisSave :: IO () = do
   runRedis conn save
   return ()
 
-andF :: (a -> Bool) -> (a -> Bool) -> a -> Bool
-andF f g a = (f a) && (g a)
+andF :: [(a -> Bool)] -> a -> Bool
+andF fs a = and $ map ($ a) fs
 
-orF :: (a -> Bool) -> (a -> Bool) -> a -> Bool
-orF f g a = (f a) || (g a)
+orF :: [(a -> Bool)] -> a -> Bool
+orF fs a = or $ map ($ a) fs
+
+(&-&) f g a = (f a) && (g a)
+(|-|) f g a = (f a) || (g a)
+
+(-=-) = isInfixOf
 
 -- lenses
 class HasCommonBody a where
@@ -165,7 +170,7 @@ fileExtF :: (ByteString -> Bool) -> Record -> Bool
 fileExtF f = pathF (maybe True f . lastM . BS.split '.')
 
 p :: Maybe Int -> Record -> ByteString
-p maybeN Record{..} = verb req <> " " <> path req <> "?" <> query_param_string (query_params req) <> " "
+p maybeN Record{..} = verb req <> " " <> path req <> (\x -> if BS.null x then x else "?" <> x) (query_param_string (query_params req)) <> " "
              <> request_version req
              <> "\n" <> BS.concat (map print_http (headers (getBody req))) <> "\n"
              <> maybe (body' req) (\n -> BS.take n $ body' req) maybeN <> "\n"
@@ -186,7 +191,7 @@ instance IHaskellDisplay Records where
             td $ pre $ toHtml $ (take 4 recId)
             td $ pre $ toHtml $ BS.toString $ host r
             td $ pre $ toHtml $ BS.toString $ verb req
-            td $ pre $ toHtml $ ellipsify 110 $ BS.toString $ path req <> "?" <> query_param_string (query_params req)
+            td $ pre $ toHtml $ ellipsify 110 $ BS.toString $ path req <> (\x -> if BS.null x then x else "?" <> x) (query_param_string (query_params req))
             td $ pre $ toHtml $ BS.toString $ status_code resp
             td $ pre $ toHtml $ show $ BS.length (body' resp)
             td $ pre $ toHtml $ formatTime defaultTimeLocale "%d-%H:%M:%S" $ posixSecondsToUTCTime ((fromIntegral (timestamp `div` 1000000000)) - 7 * 60 * 60)
@@ -201,9 +206,6 @@ instance IHaskellDisplay Record where
 filt f = Records . filter f . unRecords
 map' f = Records . map f . unRecords
 
-(-=-) = isInfixOf
-(&-&) = andF
-(|-|) = orF
 
 main = do
   rs <- getHistory
